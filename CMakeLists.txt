@@ -8,6 +8,15 @@ project(remote_IO C)
 # 컴파일 옵션 추가 (선택 사항 - 경고 메시지 활성화)
 add_compile_options(-Wall -Wextra)
 
+# 공통 헤더 include 디렉토리 설정
+include_directories(include)
+
+# 빌드 결과물(바이너리 및 공유 라이브러리) 출력 폴더 설정
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
+
 # 하위 디렉토리의 CMakeLists.txt를 실행하도록 지시
+add_subdirectory(lib)
 add_subdirectory(server)
 add_subdirectory(client)

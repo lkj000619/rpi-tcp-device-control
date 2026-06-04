@@ -12,61 +12,58 @@
 #include "common.h"
 
 void * server_thread(void *arg){
-    // printf("Thread Created\n");
     void *handle;
-	void (*fptr)(readIO_t *);
-	char *error;
+    void (*fptr)(readIO_t *);
+    char *error;
 
-	handle = dlopen("./libRemoteIO.so", RTLD_LAZY);
-	if (!handle) {
-		fprintf(stderr, "%s\n", dlerror());
-		exit(EXIT_FAILURE);
-	}
+    handle = dlopen("./libRemoteIO.so", RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        syslog(LOG_ERR, "dlopen failed: %s", dlerror());
+        exit(EXIT_FAILURE);
+    }
 
-	dlerror();    /* Clear any existing error */
+    dlerror();    /* Clear any existing error */
 
-	// char* func_name[FUNC_CNT] = {"add", "sub", "mul", "div"};
-
-    fptr =  dlsym(handle, "daemon_server");
+    fptr = dlsym(handle, "daemon_server");
     error = dlerror();
     if (error != NULL) {
-        fprintf(stderr, "%s\n", error);
+        fprintf(stderr, "dlsym failed: %s\n", error);
+        syslog(LOG_ERR, "dlsym failed: %s", error);
         exit(EXIT_FAILURE);
     }
     fptr(arg);
 
-	dlclose(handle);
-	pthread_exit(NULL);
+    dlclose(handle);
+    pthread_exit(NULL);
 }
 
 void * IOread_thread(void *arg){
-    // printf("Thread Created\n");
     void *handle;
-	void (*fptr)(readIO_t *);
-	char *error;
+    void (*fptr)(readIO_t *);
+    char *error;
 
-	handle = dlopen("./libRemoteIO.so", RTLD_LAZY);
-	if (!handle) {
-		fprintf(stderr, "%s\n", dlerror());
-		exit(EXIT_FAILURE);
-	}
+    handle = dlopen("./libRemoteIO.so", RTLD_LAZY);
+    if (!handle) {
+        fprintf(stderr, "dlopen failed: %s\n", dlerror());
+        syslog(LOG_ERR, "dlopen failed: %s", dlerror());
+        exit(EXIT_FAILURE);
+    }
 
-	dlerror();    /* Clear any existing error */
+    dlerror();    /* Clear any existing error */
 
-	// char* func_name[FUNC_CNT] = {"add", "sub", "mul", "div"};
-
-    fptr =  dlsym(handle, "IOread");
+    fptr = dlsym(handle, "IOread");
     error = dlerror();
     if (error != NULL) {
-        fprintf(stderr, "%s\n", error);
+        fprintf(stderr, "dlsym failed: %s\n", error);
+        syslog(LOG_ERR, "dlsym failed: %s", error);
         exit(EXIT_FAILURE);
     }
     fptr(arg);
 
-	dlclose(handle);
-	pthread_exit(NULL);
+    dlclose(handle);
+    pthread_exit(NULL);
 }
-
 
 int main(int argc, char **argv)
 {
@@ -74,13 +71,20 @@ int main(int argc, char **argv)
     struct rlimit rl;
     int fd0, fd1, fd2, i;
     pid_t pid;
+    char cwd[1024];
 
     pthread_t server_tid, IOread_tid;
-    pthread_mutex_t IOread_mutex;
+    pthread_mutex_t IOread_mutex = PTHREAD_MUTEX_INITIALIZER;
     readIO_t read_data;
 
     if(argc < 2) {
         printf("Usage : %s command\n", argv[0]);
+        return -1;
+    }
+
+    // 데몬화 전 라이브러리가 존재하는 현재의 원래 디렉터리 경로를 획득합니다.
+    if (getcwd(cwd, sizeof(cwd)) == NULL) {
+        perror("getcwd()");
         return -1;
     }
 
@@ -93,7 +97,8 @@ int main(int argc, char **argv)
     }
 
     if((pid = fork()) < 0) {
-        perror("error()");
+        perror("fork()");
+        return -1;
     } else if(pid != 0) { /* 부모 프로세스는 종료한다. */
         return 0;
     }
@@ -109,9 +114,9 @@ int main(int argc, char **argv)
         perror("sigaction() : Can't ignore SIGHUP");
     }
 
-    /* 프로세스의 워킹 디렉터리를 ‘/’로 설정한다. */
-    if(chdir("/") < 0) {
-        perror("cd()");
+    /* 작업 디렉터리를 원래 기동 폴더 경로로 설정하여 동적 라이브러리 로드가 가능하게 합니다. */
+    if(chdir(cwd) < 0) {
+        perror("chdir()");
     }
 
     /* 프로세스의 모든 파일 디스크립터를 닫는다. */
@@ -124,7 +129,6 @@ int main(int argc, char **argv)
     }
 
     /* 파일 디스크립터 0, 1과 2를 /dev/null로 연결한다. */
-    // 데몬 파일을 표준 입출력하지않음. 막음.
     fd0 = open("/dev/null", O_RDWR);
     fd1 = dup(0);
     fd2 = dup(0);
@@ -137,20 +141,24 @@ int main(int argc, char **argv)
     }
 
     /* 로그 파일에 정보 수준의 로그를 출력한다. */
-    syslog(LOG_INFO, "Daemon Process");
-    while(1) {
-        /* 데몬 프로세스로 해야 할 일을 반복 수행 */
-        if (pthread_create( &server_tid, NULL, IOread_thread, &read_data) != 0) {
-            perror("pthread_create");
-            exit (1);
-        }
-        if (pthread_create( &IOread_tid, NULL, server_thread, &read_data) != 0) {
-            perror("pthread_create");
-            exit (1);
-        }
-        pthread_join(server_tid, NULL);
-        pthread_join(IOread_tid, NULL);
+    syslog(LOG_INFO, "Daemon Process Started");
+
+    read_data.mutex = &IOread_mutex;
+
+    // 각 스레드 생성 인자에 맞는 스레드 함수를 지정해 한 번만 기동합니다.
+    if (pthread_create(&IOread_tid, NULL, IOread_thread, &read_data) != 0) {
+        syslog(LOG_ERR, "pthread_create IOread_thread failed");
+        closelog();
+        return 1;
     }
+    if (pthread_create(&server_tid, NULL, server_thread, &read_data) != 0) {
+        syslog(LOG_ERR, "pthread_create server_thread failed");
+        closelog();
+        return 1;
+    }
+
+    pthread_join(IOread_tid, NULL);
+    pthread_join(server_tid, NULL);
 
     /* 시스템 로그를 닫는다. */
     closelog();
