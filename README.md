@@ -37,17 +37,52 @@
 ### 빌드 요구사항
 - CMake 3.10 이상
 - GCC 컴파일러
-- wiringPi 라이브러리 (라즈베리파이 시스템 내 필수 설치)
-### 전체 빌드 및 증분 빌드 수행
-제공되는 자동 빌드 스크립트를 사용하여 손쉽게 빌드할 수 있습니다.
-```bash
-# 빌드 수행 (변경된 소스코드만 선별하여 증분 빌드 수행)
-./build_all.sh
+- wiringPi 라이브러리 (서버 실행 대상 라즈베리파이 시스템 내 필수 설치)
 
-# 기존 빌드 결과물 정리 (Clean 빌드용)
-./build_all.sh clean
+### 호스트 PC 크로스 툴체인 설치 (라즈베리파이 타겟 크로스 컴파일용)
+호스트 PC(Ubuntu x86_64 등)에서 라즈베리파이 4 타겟용 ARM64 바이너리를 생성하려면 다음 패키지를 먼저 설치해야 합니다.
+```bash
+sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 ```
-- 컴파일이 성공적으로 완료되면 최상위 디렉터리에 `bin/` 폴더가 생성되고 `bin/server` 및 `bin/client` 실행 파일이 자동 배치됩니다.
+
+### 전체 빌드 및 증분 빌드 수행 (all_build.sh)
+전체 빌드 스크립트를 통해 클라이언트(x86_64)와 서버(ARM64 크로스 컴파일)를 순차적으로 빌드하여 `bin/` 폴더에 생성합니다.
+```bash
+# 전체 빌드 수행 (client: x86_64 네이티브, server: ARM64 크로스 컴파일)
+./all_build.sh
+
+# 전체 빌드 환경 정리 (Clean 빌드용)
+./all_build.sh clean
+
+# 전체 네이티브 빌드 수행 (client: x86_64, server: x86_64)
+./all_build.sh native
+```
+
+### 개별 컴파일 수행
+프로젝트의 독립성을 보장하기 위해 빌드 디렉터리(`build_client`, `build_server`)가 완전 격리되어 동작합니다.
+
+#### 1) 클라이언트 단독 빌드 (client_build.sh)
+클라이언트는 항상 호스트 x86_64 네이티브 바이너리로 컴파일됩니다.
+```bash
+# 클라이언트 빌드 기동
+./client_build.sh
+
+# 클라이언트 빌드 잔재 정리
+./client_build.sh clean
+```
+
+#### 2) 서버 단독 빌드 (server_build.sh)
+기본적으로 라즈베리파이 ARM64 크로스 컴파일을 수행하며, `native` 옵션으로 네이티브 환경(x86_64) 빌드도 가능합니다.
+```bash
+# 라즈베리파이 ARM64 크로스 컴파일 수행 (기본값)
+./server_build.sh
+
+# 호스트 x86_64 네이티브 서버 빌드 수행
+./server_build.sh native
+
+# 서버 빌드 잔재 정리
+./server_build.sh clean
+```
 ## 4. 실행 방법
 ---
 ### 서버 데몬 기동 (라즈베리파이 측)

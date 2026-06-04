@@ -16,7 +16,23 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/../bin)
 
+# 빌드 대상 선택 옵션 제공 (기본값 ON)
+option(BUILD_CLIENT "Build client application" ON)
+option(BUILD_SERVER "Build server and remote IO library" ON)
+
+# 만약 크로스 컴파일 중이라면 클라이언트 빌드는 강제로 비활성화
+if(CMAKE_CROSSCOMPILING)
+    set(BUILD_CLIENT OFF CACHE BOOL "Build client application" FORCE)
+endif()
+
 # 하위 디렉토리의 CMakeLists.txt를 실행하도록 지시
-add_subdirectory(lib)
-add_subdirectory(server)
-add_subdirectory(client)
+if(BUILD_SERVER)
+    message(STATUS "서버 및 공유 라이브러리 빌드 활성화")
+    add_subdirectory(lib)
+    add_subdirectory(server)
+endif()
+
+if(BUILD_CLIENT)
+    message(STATUS "클라이언트 어플리케이션 빌드 활성화")
+    add_subdirectory(client)
+endif()

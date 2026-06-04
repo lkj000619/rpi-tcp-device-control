@@ -45,6 +45,9 @@ project_test/
 ### 7. 백그라운드 데몬 파일 로깅 시스템 보완 ([lib/server.c](file:///home/pang/project_test/lib/server.c))
 - 터미널 표준 스트림 차단 상태인 데몬 프로세스의 작동 상황을 감시하기 위해, 스레드 안전성(뮤텍스 락)을 보장하는 `write_daemon_log` 파일 로그 함수를 추가했습니다.
 - 서버 구동 시점, 클라이언트의 접속 성공(접속 IP 주소 기록) 및 퇴장(단선 포함), 그리고 사용자가 송출한 액추에이터 제어 명령(LED ON/OFF/밝기설정값, 부저, 타이머 등), 조도 오토 모드에 의한 자동 핀 토글 등을 `remoteIO.log` 파일에 시간 정보([YYYY-MM-DD HH:MM:SS])와 함께 실시간 한글 기록하도록 통합하였습니다.
+### 8. 라즈베리파이 ARM64 크로스 컴파일용 툴체인 연동 ([toolchain_arm64.cmake](file:///home/pang/project_test/toolchain_arm64.cmake))
+- 호스트 PC(x86_64)에서 라즈베리파이 4 타겟 보드에 동작하는 ARM64 실행 파일을 크로스 빌드할 수 있도록 전용 툴체인 설정 파일인 [toolchain_arm64.cmake](file:///home/pang/project_test/toolchain_arm64.cmake)을 도입했습니다.
+- [build_all.sh](file:///home/pang/project_test/build_all.sh)를 갱신하여 `./build_all.sh arm64` 커맨드 입력 시 CMake 빌드 캐시를 자동으로 깨끗하게 청소하고, 툴체인을 인계받아 에러 없이 한 번에 ARM64 바이너리를 빌드해 낼 수 있는 지능형 빌드 파이프라인을 구축했습니다.
 ## 라즈베리파이 실장비 검증 시나리오 및 절차
 ---
 기기 이관 후 최종 레이아웃 빌드가 올바르게 완료되는지 다음의 지침에 따라 검증하시기 바랍니다.
