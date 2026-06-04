@@ -1,84 +1,112 @@
-#include <stdio.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <string.h>
-#include <syslog.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <sys/select.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
-#include <sys/stat.h>
-#include <sys/resource.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 
-int main(int argc, char **argv)
-{
-    struct sigaction sa; /* 시그널 처리를 위한 시그널 액션 */
-    struct rlimit rl;
-    int fd0, fd1, fd2, i;
-    pid_t pid;
+#include "common.h"
 
-    if(argc < 2) {
-        printf("Usage : %s command\n", argv[0]);
-        return -1;
+#define MAXDATASIZE 255
+#define BACKLOG     10
+
+void daemon_server(readIO_t* readIO){
+    int sockfd, new_fd;
+
+    struct sockaddr_in server_addr;
+    struct sockaddr_in client_addr;
+    int sin_size;
+
+    if((sockfd = socket(AF_INET, SOCK_STREAM, 0)) == -1){
+        perror("socket");
+        exit(1);
     }
 
-    /* 파일 생성을 위한 마스크를 0으로 설정 */
-    umask(0);
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(60000);
+    server_addr.sin_addr.s_addr = htons(INADDR_ANY);
+    memset(&(server_addr.sin_zero),'\0',8);
 
-    /* 사용할 수 있는 최대의 파일 디스크립터 수 얻기 */
-    if(getrlimit(RLIMIT_NOFILE, &rl) < 0) {
-        perror("getlimit()");
+    if(bind(sockfd, (struct sockaddr*)&server_addr, sizeof(struct sockaddr)) == -1){
+        perror("bind");
+        exit(1);
     }
 
-    if((pid = fork()) < 0) {
-        perror("error()");
-    } else if(pid != 0) { /* 부모 프로세스는 종료한다. */
-        return 0;
+    if(listen(sockfd, BACKLOG) == -1) {
+        perror("listen");
+        exit(1);
     }
 
-    /* 터미널을 제어할 수 없도록 세션의 리더가 된다. */
-    setsid();
+    sin_size= sizeof(struct sockaddr_in);
 
-    /* 터미널 제어와 관련된 시그널을 무시한다. */
-    sa.sa_handler = SIG_IGN;
-    sigemptyset(&sa.sa_mask);
-    sa.sa_flags = 0;
-    if(sigaction(SIGHUP, &sa, NULL) < 0) {
-        perror("sigaction() : Can't ignore SIGHUP");
+    if((new_fd= accept(sockfd, (struct sockaddr*)&client_addr,&sin_size))== -1)  {
+        perror("accept");
+        // continue;
     }
 
-    /* 프로세스의 워킹 디렉터리를 ‘/’로 설정한다. */
-    if(chdir("/") < 0) {
-        perror("cd()");
+    printf("server : got connection from %s \n",inet_ntoa(client_addr.sin_addr));
+
+    command(new_fd, client_addr);
+
+    close(new_fd);
+
+    return;
+}
+
+
+void command(int sd, struct sockaddr_in usr){
+    fd_set fdset, fdset1;
+    char buf[MAXDATASIZE];
+
+    FD_ZERO(&fdset);
+    FD_SET(0, &fdset);
+    FD_SET(sd,&fdset);
+
+    fdset1 = fdset;
+
+    printf("=================\n");
+    printf("     CHATTING    ");
+    printf("\n=================\n");
+
+    while (1){
+        printf("[ MY ] > ");
+        fflush(stdout);
+        fdset = fdset1;
+        select(sd+1, &fdset, NULL, NULL, NULL);
+        
+        if(FD_ISSET(0, &fdset)){
+            fgets(buf, sizeof(buf), stdin);
+            if(send(sd, buf, strlen(buf), 0) == -1){
+                perror("send");
+                break;
+            } 
+            if(strncmp("exit",buf,4) == 0) break;
+        }
+        else if(FD_ISSET(sd, &fdset)){
+            int bytes;
+            if((bytes = recv(sd,buf,MAXDATASIZE-1,0)) == -1){
+                perror("recv");
+                break;
+            }
+            else if(bytes == 0){
+                printf("Disconnected\n");
+                break;
+            }
+            buf[bytes] = '\0';
+            printf("\n[ %s ] > %s",(char*) inet_ntoa(usr.sin_addr), buf);
+
+            if(strncmp("exit",buf,4) == 0) break;
+        }
+        else{
+            printf("\nEXIT");
+            break;
+        }
     }
-
-    /* 프로세스의 모든 파일 디스크립터를 닫는다. */
-    if(rl.rlim_max == RLIM_INFINITY) {
-        rl.rlim_max = 1024;
-    }
-
-    for(i = 0; i < rl.rlim_max; i++) {
-        close(i);
-    }
-
-    /* 파일 디스크립터 0, 1과 2를 /dev/null로 연결한다. */
-    // 데몬 파일을 표준 입출력하지않음. 막음.
-    fd0 = open("/dev/null", O_RDWR);
-    fd1 = dup(0);
-    fd2 = dup(0);
-
-    /* 로그 출력을 위한 파일 로그를 연다. */
-    openlog(argv[1], LOG_CONS, LOG_DAEMON);
-    if(fd0 != 0 || fd1 != 1 || fd2 != 2) {
-        syslog(LOG_ERR, "unexpected file descriptors %d %d %d", fd0, fd1, fd2);
-        return -1;
-    }
-
-    /* 로그 파일에 정보 수준의 로그를 출력한다. */
-    syslog(LOG_INFO, "Daemon Process");
-    while(1) {
-        /* 데몬 프로세스로 해야 할 일을 반복 수행 */
-    }
-
-    /* 시스템 로그를 닫는다. */
-    closelog();
-
-    return 0;
 }
