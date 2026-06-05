@@ -7,4 +7,5 @@ scp.sh
 .io_test/*
 !.io_test/*.c
 
-build/*
+build_*/*
+bin/*

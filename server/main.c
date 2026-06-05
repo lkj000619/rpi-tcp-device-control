@@ -9,7 +9,8 @@
 #include <sys/resource.h>
 #include <pthread.h>
 #include <dlfcn.h>
-#include "common.h"
+#include "io_control.h"
+#include "server_socket.h"
 
 void * server_thread(void *arg){
     void *handle;
@@ -38,7 +39,7 @@ void * server_thread(void *arg){
     pthread_exit(NULL);
 }
 
-void * IOread_thread(void *arg){
+void * readIO_thread(void *arg){
     void *handle;
     void (*fptr)(readIO_t *);
     char *error;
@@ -78,7 +79,7 @@ int main(int argc, char **argv)
     readIO_t read_data;
 
     if(argc < 2) {
-        printf("Usage : %s command\n", argv[0]);
+        printf("Usage : %s <log_filename>\n", argv[0]);
         return -1;
     }
 
@@ -134,7 +135,7 @@ int main(int argc, char **argv)
     fd2 = dup(0);
 
     /* 로그 출력을 위한 파일 로그를 연다. */
-    openlog(argv[1], LOG_CONS, LOG_DAEMON);
+    openlog("remote_daemon", LOG_CONS, LOG_DAEMON);
     if(fd0 != 0 || fd1 != 1 || fd2 != 2) {
         syslog(LOG_ERR, "unexpected file descriptors %d %d %d", fd0, fd1, fd2);
         return -1;
@@ -144,10 +145,11 @@ int main(int argc, char **argv)
     syslog(LOG_INFO, "Daemon Process Started");
 
     read_data.mutex = &IOread_mutex;
+    strncpy(read_data.log_filename, argv[1], sizeof(read_data.log_filename) - 1);
 
     // 각 스레드 생성 인자에 맞는 스레드 함수를 지정해 한 번만 기동합니다.
-    if (pthread_create(&IOread_tid, NULL, IOread_thread, &read_data) != 0) {
-        syslog(LOG_ERR, "pthread_create IOread_thread failed");
+    if (pthread_create(&IOread_tid, NULL, readIO_thread, &read_data) != 0) {
+        syslog(LOG_ERR, "pthread_create readIO_thread failed");
         closelog();
         return 1;
     }

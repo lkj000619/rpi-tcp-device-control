@@ -68,7 +68,7 @@ int main(int argc, char *argv[])
     }
 
     server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(60000);
+    server_addr.sin_port = htons(PORT);
     server_addr.sin_addr = *((struct in_addr *)he->h_addr);
     memset(&(server_addr.sin_zero), '\0', 8);
 

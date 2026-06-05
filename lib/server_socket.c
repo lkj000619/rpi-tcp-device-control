@@ -1,6 +1,5 @@
 #include <sys/socket.h>
 #include <sys/types.h>
-#include <sys/wait.h>
 #include <sys/epoll.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -10,46 +9,30 @@
 #include <string.h>
 #include <errno.h>
 #include <pthread.h>
-#include <wiringPi.h>
-#include <softPwm.h>
-#include <softTone.h>
 #include <stdarg.h>
 #include <time.h>
+#include <wiringPi.h>
+#include <softPwm.h>
 
-#include "common.h"
+#include "io_control.h"
+#include "server_socket.h"
 
-#define PORT 60000
-#define MAX_CLIENTS 20
-#define MAXDATASIZE 256
-
-static const char* led_color_names[] = {"", "빨간색(Soft PWM)", "노란색(Hard PWM)", "녹색(Hard PWM)"};
-
-// 세그먼트 디코더 핀 mapping 및 숫자 비트 정의 (common.h 매크로 적용)
-static const int fnd_pins[4] = {FND_D_PIN, FND_C_PIN, FND_B_PIN, FND_A_PIN}; 
-static const int fnd_digits[10][4] = {
-    {0,0,0,0}, // 0
-    {0,0,0,1}, // 1
-    {0,0,1,0}, // 2
-    {0,0,1,1}, // 3
-    {0,1,0,0}, // 4
-    {0,1,0,1}, // 5
-    {0,1,1,0}, // 6
-    {0,1,1,1}, // 7
-    {1,0,0,0}, // 8
-    {1,0,0,1}  // 9
-};
-
-// 비동기 제어 리소스
-static pthread_t led_threads[4]; // 1: LED1, 2: LED2, 3: LED3, 0: YL40 D1 LED
-static int led_thread_running[4] = {0};
-static pthread_mutex_t led_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-// 로그 작성을 위한 뮤텍스 및 헬퍼 함수 구현
+static const char* led_color_names[] = {"", "빨간색 LED", "노란색 LED", "녹색 LED"};
 static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static client_session_t client_sessions[MAX_CLIENTS];
+static char daemon_log_filename[256] = "remoteIO.log";
+
+void set_daemon_log_filename(const char* filename) {
+    pthread_mutex_lock(&log_mutex);
+    if (filename && strlen(filename) > 0) {
+        strncpy(daemon_log_filename, filename, sizeof(daemon_log_filename) - 1);
+    }
+    pthread_mutex_unlock(&log_mutex);
+}
 
 void write_daemon_log(const char* level, const char* format, ...) {
     pthread_mutex_lock(&log_mutex);
-    FILE *fp = fopen("remoteIO.log", "a");
+    FILE *fp = fopen(daemon_log_filename, "a");
     if (fp != NULL) {
         time_t t = time(NULL);
         struct tm *tm_info = localtime(&t);
@@ -67,216 +50,6 @@ void write_daemon_log(const char* level, const char* format, ...) {
         fclose(fp);
     }
     pthread_mutex_unlock(&log_mutex);
-}
-
-static pthread_t buz_thread;
-static int buz_thread_running = 0;
-static pthread_mutex_t buz_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static pthread_t seg_thread;
-static int seg_thread_running = 0;
-static pthread_mutex_t seg_thread_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-// 세션 관리 데이터 풀
-static client_session_t client_sessions[MAX_CLIENTS];
-
-extern void write_pcf8591(int fd, int channel, int value);
-
-void stop_led_thread(int index) {
-    pthread_mutex_lock(&led_thread_mutex);
-    if (led_thread_running[index]) {
-        pthread_cancel(led_threads[index]);
-        pthread_join(led_threads[index], NULL);
-        led_thread_running[index] = 0;
-    }
-    pthread_mutex_unlock(&led_thread_mutex);
-}
-
-void stop_buz_thread() {
-    pthread_mutex_lock(&buz_thread_mutex);
-    if (buz_thread_running) {
-        pthread_cancel(buz_thread);
-        pthread_join(buz_thread, NULL);
-        buz_thread_running = 0;
-    }
-    pthread_mutex_unlock(&buz_thread_mutex);
-    softToneWrite(BUZ_PIN, 0);
-}
-
-void stop_seg_thread() {
-    pthread_mutex_lock(&seg_thread_mutex);
-    if (seg_thread_running) {
-        pthread_cancel(seg_thread);
-        pthread_join(seg_thread, NULL);
-        seg_thread_running = 0;
-    }
-    pthread_mutex_unlock(&seg_thread_mutex);
-    for (int i = 0; i < 4; i++) {
-        digitalWrite(fnd_pins[i], HIGH);
-    }
-}
-
-// LED 효과 관련 자료형 및 스레드 함수
-typedef struct {
-    int pin;
-    int is_soft;
-} LedEffectArg;
-
-void *led_blink_thread_func(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    LedEffectArg effect_arg = *(LedEffectArg *)arg;
-    free(arg); // 루프 돌기 전 힙 메모리 즉시 안전 반환! (Cancel 시 누수 방지)
-    
-    int pin = effect_arg.pin;
-    int is_soft = effect_arg.is_soft;
-    int state = 0;
-
-    if (is_soft) {
-        while (1) {
-            state = !state;
-            softPwmWrite(pin, state ? 255 : 0);
-            usleep(500000);
-        }
-    } else {
-        while (1) {
-            state = !state;
-            pwmWrite(pin, state ? 1023 : 0);
-            usleep(500000);
-        }
-    }
-    return NULL;
-}
-
-void *led_fade_thread_func(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    LedEffectArg effect_arg = *(LedEffectArg *)arg;
-    free(arg); // 즉시 힙 메모리 반환
-    
-    int pin = effect_arg.pin;
-    int is_soft = effect_arg.is_soft;
-
-    if (is_soft) {
-        while (1) {
-            for (int val = 0; val <= 255; val += 5) {
-                softPwmWrite(pin, val);
-                usleep(15000);
-            }
-            for (int val = 255; val >= 0; val -= 5) {
-                softPwmWrite(pin, val);
-                usleep(15000);
-            }
-        }
-    } else {
-        while (1) {
-            for (int val = 0; val <= 1023; val += 20) {
-                pwmWrite(pin, val);
-                usleep(15000);
-            }
-            for (int val = 1023; val >= 0; val -= 20) {
-                pwmWrite(pin, val);
-                usleep(15000);
-            }
-        }
-    }
-    return NULL;
-}
-
-// YL40 D1 LED BLINK
-typedef struct {
-    int fd;
-} Yl40D1BlinkArg;
-
-void *yl40_d1_blink_thread_func(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    Yl40D1BlinkArg d1_arg = *(Yl40D1BlinkArg *)arg;
-    free(arg); // 루프 전 즉시 안전 반환
-    
-    int fd = d1_arg.fd;
-    int state = 0;
-    while (1) {
-        state = !state;
-        write_pcf8591(fd, YL40_AOUT, state ? 255 : 0);
-        usleep(500000);
-    }
-    return NULL;
-}
-
-// 부저 연주
-static const int buzzer_notes[] = {
-    1200, 800, 1200, 800, 1200, 800, 1200, 800, 1200, 800,
-    1200, 800, 1200, 800, 1200, 800, 1200, 800, 1200, 800
-};
-
-void *buz_play_thread_func(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    (void)arg;
-    softToneCreate(BUZ_PIN);
-    while (1) {
-        for (int i = 0; i < 20; i++) {
-            softToneWrite(BUZ_PIN, buzzer_notes[i]);
-            usleep(280000);
-        }
-    }
-    return NULL;
-}
-
-void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO);
-
-// 7세그먼트 카운트다운
-typedef struct {
-    int start_num;
-    int client_fd;
-    client_session_t *session;
-    readIO_t *readIO;
-} SegArg;
-
-void *seg_thread_func(void *arg) {
-    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
-    SegArg s_arg = *(SegArg *)arg;
-    free(arg); // 즉시 힙 메모리 안전 반환
-    
-    int current = s_arg.start_num;
-    int clnt_fd = s_arg.client_fd;
-    client_session_t *sess = s_arg.session;
-    readIO_t *readIO = s_arg.readIO;
-
-    for (int i = 0; i < 4; i++) {
-        pinMode(fnd_pins[i], OUTPUT);
-    }
-
-    char msg[256];
-    for (int i = current; i >= 0; i--) {
-        for (int j = 0; j < 4; j++) {
-            digitalWrite(fnd_pins[j], fnd_digits[i][j] ? HIGH : LOW);
-        }
-        sprintf(msg, "\n[백그라운드] 가상 7-Segment 표시: %d초\n", i);
-        write(clnt_fd, msg, strlen(msg));
-        if (i == 0) break;
-        sleep(1);
-    }
-
-    sprintf(msg, "\n[백그라운드] 타이머 종료! 가상 부저 ON\n");
-    write(clnt_fd, msg, strlen(msg));
-    write_daemon_log("INFO", "[Socket: %d] 7-Segment 제어: 타이머 완료 및 알림 경보 구동\n", clnt_fd);
-
-    softToneCreate(BUZ_PIN);
-    softToneWrite(BUZ_PIN, 1000);
-    usleep(1500000); // 1.5초
-    softToneWrite(BUZ_PIN, 0);
-
-    for (int i = 0; i < 4; i++) {
-        digitalWrite(fnd_pins[i], HIGH);
-    }
-
-    sess->current_session = SESSION_MAIN;
-    send_menu_and_prompt(clnt_fd, sess, readIO);
-
-    pthread_mutex_lock(&seg_thread_mutex);
-    seg_thread_running = 0;
-    pthread_mutex_unlock(&seg_thread_mutex);
-
-    write_daemon_log("INFO", "[Socket: %d] 7-Segment 제어: 경보음 종료 및 7-Segment 소등 완료\n", clnt_fd);
-    return NULL;
 }
 
 void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO) {
@@ -314,7 +87,7 @@ void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO) {
 
         case SESSION_LED_ACTION: {
             pthread_mutex_lock(readIO->mutex);
-            int cur_pwm = readIO->led_pwm_state[selected_led];
+            int cur_pwm = readIO->led_pwm_preset[selected_led];
             pthread_mutex_unlock(readIO->mutex);
             sprintf(menu_buf,
                 "\n------- [ %s 전용 제어 ] -------\n"
@@ -346,7 +119,7 @@ void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO) {
 
         case SESSION_LED_PWM: {
             pthread_mutex_lock(readIO->mutex);
-            int cur_pwm = readIO->led_pwm_state[selected_led];
+            int cur_pwm = readIO->led_pwm_preset[selected_led];
             pthread_mutex_unlock(readIO->mutex);
             sprintf(menu_buf,
                 "\n------- [ %s 밝기(PWM) 상세 조절 ] -------\n"
@@ -418,7 +191,7 @@ void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO) {
 
         case SESSION_YL40_D1: {
             pthread_mutex_lock(readIO->mutex);
-            int cur_pwm = readIO->d1_led_state;
+            int cur_pwm = readIO->d1_led_preset;
             pthread_mutex_unlock(readIO->mutex);
             sprintf(menu_buf,
                 "\n------- [ YL-40 D1 LED 상세 제어 ] -------\n"
@@ -445,7 +218,7 @@ void send_menu_and_prompt(int fd, client_session_t *session, readIO_t *readIO) {
 
         case SESSION_YL40_D1_PWM: {
             pthread_mutex_lock(readIO->mutex);
-            int cur_pwm = readIO->d1_led_state;
+            int cur_pwm = readIO->d1_led_preset;
             pthread_mutex_unlock(readIO->mutex);
             sprintf(menu_buf,
                 "\n------- [ YL-40 D1 밝기(PWM) 상세 조절 ] -------\n"
@@ -501,12 +274,60 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             session->current_session = SESSION_LED_ACTION;
         } 
         else if (cur == SESSION_LED_ACTION) {
+            int led_num = session->selected_led;
+            stop_led_thread(led_num);
+            int target_pin = (led_num == 1) ? LED1_PIN : ((led_num == 2) ? LED2_PIN : LED3_PIN);
+            if (led_num == 1) softPwmWrite(target_pin, 0);
+            else pwmWrite(target_pin, 0);
+            
+            pthread_mutex_lock(readIO->mutex);
+            readIO->led_pwm_state[led_num] = 0;
+            pthread_mutex_unlock(readIO->mutex);
+
             session->current_session = SESSION_LED_SELECT;
         } 
-        else if (cur == SESSION_LED_SELECT || cur == SESSION_BUZ || cur == SESSION_YL40 || cur == SESSION_SEG) {
+        else if (cur == SESSION_LED_SELECT) {
             session->current_session = SESSION_MAIN;
         }
-        else if (cur == SESSION_YL40_THRESHOLD || cur == SESSION_YL40_D1 || cur == SESSION_YL40_AUTO) {
+        else if (cur == SESSION_BUZ) {
+            stop_buz_thread();
+            session->current_session = SESSION_MAIN;
+        }
+        else if (cur == SESSION_YL40) {
+            session->current_session = SESSION_MAIN;
+        }
+        else if (cur == SESSION_SEG) {
+            stop_seg_thread();
+            session->current_session = SESSION_MAIN;
+        }
+        else if (cur == SESSION_YL40_THRESHOLD) {
+            session->current_session = SESSION_YL40;
+        }
+        else if (cur == SESSION_YL40_AUTO) {
+            pthread_mutex_lock(readIO->mutex);
+            readIO->auto_mode = 0;
+            readIO->led_pwm_state[1] = 0;
+            readIO->led_pwm_state[2] = 0;
+            readIO->led_pwm_state[3] = 0;
+            pthread_mutex_unlock(readIO->mutex);
+
+            stop_led_thread(1);
+            stop_led_thread(2);
+            stop_led_thread(3);
+
+            softPwmWrite(LED1_PIN, 0);
+            pwmWrite(LED2_PIN, 0);
+            pwmWrite(LED3_PIN, 0);
+
+            session->current_session = SESSION_YL40;
+        }
+        else if (cur == SESSION_YL40_D1) {
+            stop_led_thread(0);
+            pthread_mutex_lock(readIO->mutex);
+            readIO->d1_led_state = 0;
+            pthread_mutex_unlock(readIO->mutex);
+            write_pcf8591(readIO->yl40_fd, YL40_AOUT, 0);
+
             session->current_session = SESSION_YL40;
         } 
         else if (cur == SESSION_YL40_D1_PWM || cur == SESSION_YL40_D1_ONOFF) {
@@ -556,7 +377,11 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             break;
         }
 
-        case SESSION_LED_ACTION:
+        case SESSION_LED_ACTION: {
+            int led_num = session->selected_led;
+            int target_pin = (led_num == 1) ? LED1_PIN : ((led_num == 2) ? LED2_PIN : LED3_PIN);
+            int is_soft = (led_num == 1);
+            
             if (strcmp(input, "1") == 0) {
                 session->current_session = SESSION_LED_ONOFF;
             }
@@ -565,38 +390,14 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             }
             else if (strcmp(input, "3") == 0) {
                 CHECK_LOCK();
-                int led_num = session->selected_led;
-                int target_pin = (led_num == 1) ? LED1_PIN : ((led_num == 2) ? LED2_PIN : LED3_PIN);
-                int is_soft = (led_num == 1);
-                
-                stop_led_thread(led_num);
-                pthread_mutex_lock(&led_thread_mutex);
-                LedEffectArg *arg = malloc(sizeof(LedEffectArg));
-                arg->pin = target_pin;
-                arg->is_soft = is_soft;
-                pthread_create(&led_threads[led_num], NULL, led_blink_thread_func, arg);
-                led_thread_running[led_num] = 1;
-                pthread_mutex_unlock(&led_thread_mutex);
-                
-                sprintf(response, "서버: %s BLINK 효과를 구동합니다.\n", (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"));
+                start_led_blink(led_num, target_pin, is_soft);
+                sprintf(response, "서버: %s BLINK 효과를 구동합니다.\n", led_color_names[led_num]);
                 write(fd, response, strlen(response));
             }
             else if (strcmp(input, "4") == 0) {
                 CHECK_LOCK();
-                int led_num = session->selected_led;
-                int target_pin = (led_num == 1) ? LED1_PIN : ((led_num == 2) ? LED2_PIN : LED3_PIN);
-                int is_soft = (led_num == 1);
-                
-                stop_led_thread(led_num);
-                pthread_mutex_lock(&led_thread_mutex);
-                LedEffectArg *arg = malloc(sizeof(LedEffectArg));
-                arg->pin = target_pin;
-                arg->is_soft = is_soft;
-                pthread_create(&led_threads[led_num], NULL, led_fade_thread_func, arg);
-                led_thread_running[led_num] = 1;
-                pthread_mutex_unlock(&led_thread_mutex);
-                
-                sprintf(response, "서버: %s FADE 효과를 구동합니다.\n", (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"));
+                start_led_fade(led_num, target_pin, is_soft);
+                sprintf(response, "서버: %s FADE 효과를 구동합니다.\n", led_color_names[led_num]);
                 write(fd, response, strlen(response));
             }
             else {
@@ -604,6 +405,7 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
                 write(fd, invalid_opt, strlen(invalid_opt));
             }
             break;
+        }
 
         case SESSION_LED_ONOFF: {
             CHECK_LOCK();
@@ -613,12 +415,17 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             stop_led_thread(led_num);
 
             if (strcmp(input, "1") == 0 || strcasecmp(input, "on") == 0) {
-                if (is_soft) softPwmWrite(target_pin, 255);
-                else pwmWrite(target_pin, 1023);
                 pthread_mutex_lock(readIO->mutex);
-                readIO->led_pwm_state[led_num] = 255;
+                int val = readIO->led_pwm_preset[led_num];
                 pthread_mutex_unlock(readIO->mutex);
-                sprintf(response, "서버: %s를 점등(ON)했습니다.\n", (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"));
+
+                if (is_soft) softPwmWrite(target_pin, val);
+                else pwmWrite(target_pin, (val * 1023) / 255);
+
+                pthread_mutex_lock(readIO->mutex);
+                readIO->led_pwm_state[led_num] = val;
+                pthread_mutex_unlock(readIO->mutex);
+                sprintf(response, "서버: %s를 점등(ON)했습니다 (밝기: %d).\n", led_color_names[led_num], val);
                 write(fd, response, strlen(response));
             }
             else if (strcmp(input, "0") == 0 || strcasecmp(input, "off") == 0) {
@@ -627,7 +434,7 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
                 pthread_mutex_lock(readIO->mutex);
                 readIO->led_pwm_state[led_num] = 0;
                 pthread_mutex_unlock(readIO->mutex);
-                sprintf(response, "서버: %s를 소등(OFF)했습니다.\n", (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"));
+                sprintf(response, "서버: %s를 소등(OFF)했습니다.\n", led_color_names[led_num]);
                 write(fd, response, strlen(response));
             }
             else {
@@ -646,16 +453,25 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
                 int is_soft = (led_num == 1);
                 stop_led_thread(led_num);
 
-                if (is_soft) softPwmWrite(target_pin, val);
-                else pwmWrite(target_pin, val * 4);
-                
                 pthread_mutex_lock(readIO->mutex);
-                readIO->led_pwm_state[led_num] = val;
+                readIO->led_pwm_preset[led_num] = val; // 프리셋 무조건 변경 및 보존
+                int is_on = (readIO->led_pwm_state[led_num] > 0); // 현재 물리 핀 점등 여부
+
+                if (is_on) {
+                    // 현재 켜져 있을 때만 바뀐 밝기를 실시간 핀 제어에 반영
+                    if (is_soft) softPwmWrite(target_pin, val);
+                    else pwmWrite(target_pin, (val * 1023) / 255);
+                    readIO->led_pwm_state[led_num] = val;
+                }
                 pthread_mutex_unlock(readIO->mutex);
                 
-                write_daemon_log("INFO", "[Socket: %d] LED 제어: %s 밝기 변경 (밝기값: %d)\n", fd, (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"), val);
-                sprintf(response, "서버: %s의 밝기를 %d(으)로 설정했습니다.\n", (led_num == 1) ? "빨간색 LED" : ((led_num == 2) ? "노란색 LED" : "녹색 LED"), val);
+                write_daemon_log("INFO", "[Socket: %d] LED 제어: %s 설정 밝기 변경 (밝기값: %d, 실시간 반영 여부: %s)\n", 
+                                 fd, led_color_names[led_num], val, is_on ? "YES" : "NO");
+                sprintf(response, "서버: %s의 설정 밝기를 %d(으)로 변경했습니다 (%s).\n", 
+                        led_color_names[led_num], val, is_on ? "실시간 반영됨" : "소등 상태 유지");
                 write(fd, response, strlen(response));
+
+                session->current_session = SESSION_LED_ACTION; // 성공 시 상위 세션으로 자동 퇴장
             } else {
                 char* invalid_pwm = "서버: 잘못된 밝기 값입니다. (0~255 범위 입력)\n";
                 write(fd, invalid_pwm, strlen(invalid_pwm));
@@ -666,11 +482,7 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
         case SESSION_BUZ: {
             CHECK_LOCK();
             if (strcmp(input, "1") == 0 || strcasecmp(input, "on") == 0) {
-                stop_buz_thread();
-                pthread_mutex_lock(&buz_thread_mutex);
-                pthread_create(&buz_thread, NULL, buz_play_thread_func, NULL);
-                buz_thread_running = 1;
-                pthread_mutex_unlock(&buz_thread_mutex);
+                start_buz_melody();
                 write_daemon_log("INFO", "[Socket: %d] 부저 제어: 작동 ON (멜로디 스레드 가동)\n", fd);
                 char* buz_on_msg = "서버: 부저 작동 ON (멜로디 연주 중)\n";
                 write(fd, buz_on_msg, strlen(buz_on_msg));
@@ -724,11 +536,21 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             else if (strcmp(input, "0") == 0 || strcasecmp(input, "off") == 0) {
                 pthread_mutex_lock(readIO->mutex);
                 readIO->auto_mode = 0;
-                readIO->d1_led_state = 0;
-                write_pcf8591(readIO->yl40_fd, YL40_AOUT, 0);
+                readIO->led_pwm_state[1] = 0;
+                readIO->led_pwm_state[2] = 0;
+                readIO->led_pwm_state[3] = 0;
                 pthread_mutex_unlock(readIO->mutex);
-                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: 조도 자동 제어(오토 모드) 비활성화\n", fd);
-                char* auto_off = "서버: 조도 자동 제어(오토 모드)를 비활성화했습니다.\n";
+
+                stop_led_thread(1);
+                stop_led_thread(2);
+                stop_led_thread(3);
+
+                softPwmWrite(LED1_PIN, 0);
+                pwmWrite(LED2_PIN, 0);
+                pwmWrite(LED3_PIN, 0);
+
+                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: 조도 자동 제어(오토 모드) 비활성화 및 3색 LED 소등\n", fd);
+                char* auto_off = "서버: 조도 자동 제어(오토 모드)를 비활성화했습니다 (3색 LED 소등).\n";
                 write(fd, auto_off, strlen(auto_off));
             }
             else {
@@ -768,13 +590,7 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
                 readIO->auto_mode = 0;
                 pthread_mutex_unlock(readIO->mutex);
                 
-                stop_led_thread(0);
-                pthread_mutex_lock(&led_thread_mutex);
-                Yl40D1BlinkArg *d1_arg = malloc(sizeof(Yl40D1BlinkArg));
-                d1_arg->fd = readIO->yl40_fd;
-                pthread_create(&led_threads[0], NULL, yl40_d1_blink_thread_func, d1_arg);
-                led_thread_running[0] = 1;
-                pthread_mutex_unlock(&led_thread_mutex);
+                start_yl40_d1_blink(readIO->yl40_fd);
                 
                 write_daemon_log("INFO", "[Socket: %d] YL-40 제어: D1 LED BLINK 효과 구동\n", fd);
                 char* blink_d1_msg = "서버: D1 LED BLINK 효과를 구동합니다.\n";
@@ -795,12 +611,13 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
 
             if (strcmp(input, "1") == 0 || strcasecmp(input, "on") == 0) {
                 pthread_mutex_lock(readIO->mutex);
-                readIO->d1_led_state = 255;
-                write_pcf8591(readIO->yl40_fd, YL40_AOUT, 255);
+                int val = readIO->d1_led_preset;
+                readIO->d1_led_state = val;
+                write_pcf8591(readIO->yl40_fd, YL40_AOUT, val);
                 pthread_mutex_unlock(readIO->mutex);
-                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: D1 LED 점등(ON)\n", fd);
-                char* d1_on = "서버: D1 LED를 점등(ON)했습니다.\n";
-                write(fd, d1_on, strlen(d1_on));
+                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: D1 LED 점등(ON, 밝기: %d)\n", fd, val);
+                sprintf(response, "서버: D1 LED를 점등(ON)했습니다 (밝기: %d).\n", val);
+                write(fd, response, strlen(response));
             }
             else if (strcmp(input, "0") == 0 || strcasecmp(input, "off") == 0) {
                 pthread_mutex_lock(readIO->mutex);
@@ -828,13 +645,21 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
                 stop_led_thread(0);
 
                 pthread_mutex_lock(readIO->mutex);
-                readIO->d1_led_state = val;
-                write_pcf8591(readIO->yl40_fd, YL40_AOUT, val);
+                readIO->d1_led_preset = val; // 프리셋 항상 저장
+                int is_on = (readIO->d1_led_state > 0);
+                if (is_on) {
+                    write_pcf8591(readIO->yl40_fd, YL40_AOUT, val);
+                    readIO->d1_led_state = val;
+                }
                 pthread_mutex_unlock(readIO->mutex);
 
-                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: D1 LED 밝기 설정 (설정값: %d)\n", fd, val);
-                sprintf(response, "서버: D1 LED의 밝기를 %d(으)로 설정했습니다.\n", val);
+                write_daemon_log("INFO", "[Socket: %d] YL-40 제어: D1 LED 설정 밝기 변경 (설정값: %d, 실시간 반영 여부: %s)\n", 
+                                 fd, val, is_on ? "YES" : "NO");
+                sprintf(response, "서버: D1 LED의 설정 밝기를 %d(으)로 변경했습니다 (%s).\n", 
+                        val, is_on ? "실시간 반영됨" : "소등 상태 유지");
                 write(fd, response, strlen(response));
+
+                session->current_session = SESSION_YL40_D1; // 성공 시 상위 세션으로 자동 퇴장
             } else {
                 char* invalid_d1_pwm = "서버: 잘못된 밝기 값입니다. (0~255 범위 입력)\n";
                 write(fd, invalid_d1_pwm, strlen(invalid_d1_pwm));
@@ -846,16 +671,7 @@ int process_client_input(client_session_t *session, char *input, readIO_t *readI
             CHECK_LOCK();
             int seconds = atoi(input);
             if (seconds >= 0 && seconds <= 9) {
-                stop_seg_thread();
-                pthread_mutex_lock(&seg_thread_mutex);
-                SegArg *s_arg = malloc(sizeof(SegArg));
-                s_arg->start_num = seconds;
-                s_arg->client_fd = fd;
-                s_arg->session = session;
-                s_arg->readIO = readIO;
-                pthread_create(&seg_thread, NULL, seg_thread_func, s_arg);
-                seg_thread_running = 1;
-                pthread_mutex_unlock(&seg_thread_mutex);
+                start_seg_timer(seconds, fd, session, readIO);
                 
                 write_daemon_log("INFO", "[Socket: %d] 7-Segment 제어: %d초 타이머 구동 시작\n", fd, seconds);
                 sprintf(response, "서버: %d초 타이머를 비동기로 구동합니다.\n", seconds);
@@ -907,6 +723,7 @@ void remove_client_session(int fd) {
 }
 
 void daemon_server(readIO_t* readIO) {
+    set_daemon_log_filename(readIO->log_filename);
     write_daemon_log("INFO", "서버 데몬이 포트 %d에서 정상 기동되었습니다.\n", PORT);
     int serv_sock, clnt_sock;
     struct sockaddr_in serv_addr, clnt_addr;
@@ -995,9 +812,7 @@ void daemon_server(readIO_t* readIO) {
                     pthread_mutex_lock(readIO->mutex);
                     if (readIO->active_client_fd == target_fd) {
                         readIO->active_client_fd = -1;
-                        for(int led=0; led<=3; led++) stop_led_thread(led);
-                        stop_buz_thread();
-                        stop_seg_thread();
+                        stop_all_io_operations();
                     }
                     pthread_mutex_unlock(readIO->mutex);
                 } 
@@ -1015,9 +830,7 @@ void daemon_server(readIO_t* readIO) {
                             pthread_mutex_lock(readIO->mutex);
                             if (readIO->active_client_fd == target_fd) {
                                 readIO->active_client_fd = -1;
-                                for(int led=0; led<=3; led++) stop_led_thread(led);
-                                stop_buz_thread();
-                                stop_seg_thread();
+                                stop_all_io_operations();
                             }
                             pthread_mutex_unlock(readIO->mutex);
                         }

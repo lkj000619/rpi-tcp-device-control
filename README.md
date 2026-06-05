@@ -21,17 +21,20 @@
   - *채널 명세:* Channel 0 (LDR 조도 센서), Channel 1 (NTC 서미스터 온도 센서), Channel 3 (가변저항 Potentiometer), Channel +64 (Analog OE - 보드 내장 D1 LED 출력)
 ## 2. 파일 및 디렉터리 구성
 ---
-- [CMakeLists.txt](file:///home/pang/project_test/CMakeLists.txt): 프로젝트 전역 CMAKE 설정 파일
-- [build_all.sh](file:///home/pang/project_test/build_all.sh): 메이크파일 생성 및 증분 빌드를 관장하는 쉘 스크립트
-- [include/common.h](file:///home/pang/project_test/include/common.h): 디바이스 핀 매핑 정보, 세션 상수, 프로토콜 헤더
-- [lib/CMakeLists.txt](file:///home/pang/project_test/lib/CMakeLists.txt): 원격 IO 라이브러리 빌드 설정
-- [lib/server.c](file:///home/pang/project_test/lib/server.c): TCP 소켓 분배, epoll 멀티플렉싱, 세션 처리 및 장치 구동 핵심 엔진
-- [lib/yl40.c](file:///home/pang/project_test/lib/yl40.c): PCF8591 I2C 장치 데이터 읽기/쓰기 및 조도 오토 루프 구동
-- [server/CMakeLists.txt](file:///home/pang/project_test/server/CMakeLists.txt): 서버 데몬 프로그램 빌드 설정
-- [server/main.c](file:///home/pang/project_test/server/main.c): 서버 데몬 기동 및 동적 공유 라이브러리(`libRemoteIO.so`)의 `dlopen` 진입점
-- [client/CMakeLists.txt](file:///home/pang/project_test/client/CMakeLists.txt): 클라이언트 프로그램 빌드 설정
-- [client/main.c](file:///home/pang/project_test/client/main.c): 시그널 마스킹 처리 및 표준 입출력 중계 클라이언트 (Dumb Terminal)
-- [docs/development_document.md](file:///home/pang/project_test/docs/development_document.md): 상세 개발 문서 (일정, 아키텍처 및 보완 조치)
+- [CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/CMakeLists.txt): 프로젝트 전역 CMAKE 설정 파일
+- [all_build.sh](file:///home/ethan/workspace/veda/rpi-tcp-device-control/all_build.sh): 메이크파일 생성 및 증분 빌드를 관장하는 통합 쉘 스크립트
+- [deploy.sh](file:///home/ethan/workspace/veda/rpi-tcp-device-control/deploy.sh): 빌드 파일 변경 사항을 비교하여 라즈베리파이로 전송하는 스마트 배포 스크립트
+- [include/io_control.h](file:///home/ethan/workspace/veda/rpi-tcp-device-control/include/io_control.h): 입출력 장치 제어 및 상태 공유 구조체 헤더
+- [include/server_socket.h](file:///home/ethan/workspace/veda/rpi-tcp-device-control/include/server_socket.h): 소켓 통신 및 세션 관리 헤더
+- [lib/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/CMakeLists.txt): 원격 IO 라이브러리 빌드 설정
+- [lib/io_control.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/io_control.c): LED, 부저, 세그먼트 디바이스 비동기 스레드 구동 로직
+- [lib/server_socket.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/server_socket.c): epoll 멀티플렉싱 및 소켓 통신 상태 머신 핵심 로직
+- [lib/yl40.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/yl40.c): PCF8591 I2C 장치 데이터 읽기/쓰기 및 조도 오토 루프 구동
+- [server/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/server/CMakeLists.txt): 서버 데몬 프로그램 빌드 설정
+- [server/main.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/server/main.c): 서버 데몬 기동 및 동적 공유 라이브러리(`libRemoteIO.so`)의 `dlopen` 진입점
+- [client/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/client/CMakeLists.txt): 클라이언트 프로그램 빌드 설정
+- [client/main.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/client/main.c): 시그널 마스킹 처리 및 표준 입출력 중계 클라이언트 (Dumb Terminal)
+- [docs/development_document.md](file:///home/ethan/workspace/veda/rpi-tcp-device-control/docs/development_document.md): 상세 개발 문서 (일정, 아키텍처 및 보완 조치)
 ## 3. 빌드 방법
 ---
 ### 빌드 요구사항
@@ -54,7 +57,7 @@ sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 # 전체 빌드 환경 정리 (Clean 빌드용)
 ./all_build.sh clean
 
-# 전체 네이티브 빌드 수행 (client: x86_64, server: x86_64)
+# 전체 네이티브 빌드 수행 (Raspberry Pi에서 build 실행 시)
 ./all_build.sh native
 ```
 
@@ -72,24 +75,38 @@ sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 ```
 
 #### 2) 서버 단독 빌드 (server_build.sh)
-기본적으로 라즈베리파이 ARM64 크로스 컴파일을 수행하며, `native` 옵션으로 네이티브 환경(x86_64) 빌드도 가능합니다.
+기본적으로 라즈베리파이 ARM64 크로스 컴파일을 수행하며, `native` 옵션으로 네이티브 환경 빌드도 가능합니다.
 ```bash
 # 라즈베리파이 ARM64 크로스 컴파일 수행 (기본값)
 ./server_build.sh
 
-# 호스트 x86_64 네이티브 서버 빌드 수행
+# 호스트 네이티브 서버 빌드 수행 (Raspberry Pi에서 빌드 시 사용)
 ./server_build.sh native
 
 # 서버 빌드 잔재 정리
 ./server_build.sh clean
 ```
-## 4. 실행 방법
+## 4. 라즈베리파이 스마트 배포 (deploy.sh)
+---
+호스트 PC에서 컴파일된 라즈베리파이 서버 바이너리(`bin/server`) 및 공유 라이브러리(`bin/libRemoteIO.so`)의 변경 여부(MD5 해시)를 확인하여, 업데이트된 파일만 전송합니다.
+```bash
+# 변경된 빌드 산출물 전송 (사용자명과 IP 주소 입력)
+./deploy.sh <pi_user> <ip_address>
+
+# 예시
+./deploy.sh ethan 172.20.26.241
+```
+- 인자가 누락되거나 잘못된 IP 주소(IPv4 규격 및 0~255 범위 검증)를 기입하면 오류 메시지를 띄우고 조기 종료합니다.
+- 전송 전용 SSH 키 등록(비밀번호 없는 로그인)이 되어 있는 상태를 권장합니다.
+- 변경 내역이 없는 파일은 전송을 생략합니다.
+
+## 5. 실행 방법
 ---
 ### 서버 데몬 기동 (라즈베리파이 측)
 서버 바이너리는 백그라운드 데몬으로 안전하게 분할되어 구동되며 시스템 로그(`syslog`)에 이벤트를 적재합니다.
 ```bash
 # 서버 데몬 백그라운드 가동
-./bin/server remoteIO_daemon
+./bin/server <log_filename>
 ```
 ### 클라이언트 접속 및 제어 (우분투 PC 측)
 클라이언트는 서버 측의 IP 주소를 인자로 넘겨 접속을 시도합니다.

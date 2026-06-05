@@ -5,7 +5,9 @@
 #include <wiringPi.h>
 #include <wiringPiI2C.h>
 #include <unistd.h>
-#include "common.h"
+#include "io_control.h"
+#include "server_socket.h"
+#include <softPwm.h>
 
 // NTC 써미스터 계산용 상수 (일반적인 YL-40 10k NTC 기준)
 #define B_COEFFICIENT 3950.0        // 써미스터의 B 파라미터 값
@@ -19,6 +21,7 @@ void write_pcf8591(int fd, int channel, int value);
 double convert_to_celsius(int raw_adc);
 
 void IOread(readIO_t* readIO){
+    set_daemon_log_filename(readIO->log_filename);
     readIO->yl40_fd = yl40_setup();
     if(readIO->yl40_fd < 0) {
         while(1) { sleep(1); }
@@ -29,10 +32,15 @@ void IOread(readIO_t* readIO){
     readIO->threshold = 180;
     readIO->auto_mode = 0;
     readIO->d1_led_state = 0;
+    readIO->d1_led_preset = 255;
     readIO->led_pwm_state[0] = 0;
     readIO->led_pwm_state[1] = 0;
     readIO->led_pwm_state[2] = 0;
     readIO->led_pwm_state[3] = 0;
+    readIO->led_pwm_preset[0] = 255;
+    readIO->led_pwm_preset[1] = 255;
+    readIO->led_pwm_preset[2] = 255;
+    readIO->led_pwm_preset[3] = 255;
     pthread_mutex_unlock(readIO->mutex);
 
     // 초기 DAC LED 리셋 (AOUT 채널 사용)
@@ -50,16 +58,51 @@ void IOread(readIO_t* readIO){
         readIO->read_therm  = (float)temp;
 
         // 조도 오토 모드 제어
+        static int last_auto_state = -1;
         if (readIO->auto_mode == 1) {
-            // 조도가 임계값 이상이면 어둠 -> D1 LED 켜기 (255)
-            // 임계값 미만이면 밝음 -> D1 LED 끄기 (0)
-            int target_led = (ldr >= readIO->threshold) ? 255 : 0;
-            if (readIO->d1_led_state != target_led) {
-                readIO->d1_led_state = target_led;
-                write_pcf8591(readIO->yl40_fd, YL40_AOUT, readIO->d1_led_state);
-                write_daemon_log("INFO", "오토 모드 트리거: 현재 조도(%d)가 임계값(%d) %s 상태가 되어 D1 LED를 %s했습니다.\n",
-                                 ldr, readIO->threshold, (ldr >= readIO->threshold) ? "이상(어두움)" : "미만(밝음)", target_led ? "점등(ON)" : "소등(OFF)");
+            int current_state = (ldr >= readIO->threshold) ? 1 : 0;
+            if (current_state != last_auto_state) {
+                last_auto_state = current_state;
+                
+                // 데드락 예방을 위해 락 해제 후 스레드 조작
+                pthread_mutex_unlock(readIO->mutex);
+                
+                stop_led_thread(1);
+                stop_led_thread(2);
+                stop_led_thread(3);
+                
+                pthread_mutex_lock(readIO->mutex);
+                
+                if (current_state == 1) {
+                    int p1 = readIO->led_pwm_preset[1];
+                    int p2 = readIO->led_pwm_preset[2];
+                    int p3 = readIO->led_pwm_preset[3];
+                    
+                    softPwmWrite(LED1_PIN, p1);
+                    pwmWrite(LED2_PIN, (p2 * 1023) / 255);
+                    pwmWrite(LED3_PIN, (p3 * 1023) / 255);
+                    
+                    readIO->led_pwm_state[1] = p1;
+                    readIO->led_pwm_state[2] = p2;
+                    readIO->led_pwm_state[3] = p3;
+                    
+                    write_daemon_log("INFO", "오토 모드 트리거: 어두움 감지(조도:%d >= 임계값:%d) -> 3색 LED 동시 점등 (밝기 R:%d, Y:%d, G:%d)\n",
+                                     ldr, readIO->threshold, p1, p2, p3);
+                } else {
+                    softPwmWrite(LED1_PIN, 0);
+                    pwmWrite(LED2_PIN, 0);
+                    pwmWrite(LED3_PIN, 0);
+                    
+                    readIO->led_pwm_state[1] = 0;
+                    readIO->led_pwm_state[2] = 0;
+                    readIO->led_pwm_state[3] = 0;
+                    
+                    write_daemon_log("INFO", "오토 모드 트리거: 밝음 감지(조도:%d < 임계값:%d) -> 3색 LED 동시 소등\n",
+                                     ldr, readIO->threshold);
+                }
             }
+        } else {
+            last_auto_state = -1; // 오토 모드 꺼져 있을 땐 상태 리셋
         }
         pthread_mutex_unlock(readIO->mutex);
 
@@ -98,7 +141,7 @@ int yl40_setup(){
 }
 
 int read_pcf8591(int fd, int channel){
-    int control_byte = 0x00 | channel;
+    int control_byte = 0x40 | channel;
     wiringPiI2CWrite(fd, control_byte);     // 데이터 요청
     wiringPiI2CRead(fd);                    // 더미 리드 (이전 값 버림)
     return wiringPiI2CRead(fd);             // 실제 데이터 리드

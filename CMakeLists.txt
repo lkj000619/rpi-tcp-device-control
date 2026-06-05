@@ -8,6 +8,10 @@ project(remote_IO C)
 # 컴파일 옵션 추가 (선택 사항 - 경고 메시지 활성화)
 add_compile_options(-Wall -Wextra)
 
+# TCP 포트 번호 설정 (기본값: 60001)
+set(PORT 60001 CACHE STRING "Server Port Number")
+add_compile_definitions(PORT=${PORT})
+
 # 공통 헤더 include 디렉토리 설정
 include_directories(include)
 

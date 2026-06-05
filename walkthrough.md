@@ -3,22 +3,34 @@
 ## 리팩토링 후 디렉터리 구조
 ---
 ```text
-project_test/
+rpi-tcp-device-control/
 ├── CMakeLists.txt (루트 설정)
-├── build_all.sh (증분 빌드 지원 스크립트)
+├── all_build.sh (통합 빌드 제어 스크립트)
+├── server_build.sh (서버 및 라이브러리 빌드 스크립트)
+├── client_build.sh (클라이언트 빌드 스크립트)
+├── toolchain_arm64.cmake (ARM64 크로스 컴파일 툴체인 설정)
+├── scp.sh (라즈베리파이 파일 전송 스크립트)
+├── deploy.sh (라즈베리파이 스마트 배포 스크립트)
 ├── walkthrough.md (이 완료 보고서)
+├── README.md (프로젝트 사용 안내서)
+├── analysis_results.md (프로젝트 아키텍처 및 개선 제안서)
+├── docs/
+│   ├── 2026_VEDA07_심화실습평가2(리눅스프로그래밍).md (평가 가이드)
+│   └── development_document.md (세부 개발 명세서)
 ├── include/
-│   └── common.h (공통 매크로 및 구조체 헤더)
+│   ├── io_control.h (입출력 장치 제어 및 구조체 헤더)
+│   └── server_socket.h (소켓 통신 및 세션 관리 헤더)
 ├── lib/
 │   ├── CMakeLists.txt (공유 라이브러리 빌드)
-│   ├── server.c (소켓 통신 및 상태 머신)
-│   └── yl40.c (I2C 센서 폴링 및 LED 오토 제어)
+│   ├── io_control.c (하드웨어 제어 및 스레드 캡슐화)
+│   ├── server_socket.c (소켓 바인딩 및 세션 입력 분석)
+│   └── yl40.c (I2C 센서 폴링 및 가로등 오토 제어)
 ├── server/
-│   ├── CMakeLists.txt (대몬 시작 파일 빌드)
-│   └── main.c (데몬 기동 진입점)
+│   ├── CMakeLists.txt (데몬 실행 파일 빌드)
+│   └── main.c (데몬 기동 및 라이브러리 로더)
 └── client/
-    ├── CMakeLists.txt (터미널 빌드)
-    └── main.c (시그널 대응 Dumb Terminal)
+    ├── CMakeLists.txt (클라이언트 실행 파일 빌드)
+    └── main.c (시그널 안전 텔넷 터미널)
 ```
 ## 상세 변경 및 이관 사항
 ---
@@ -56,7 +68,17 @@ project_test/
 ./build_all.sh
 ```
 - 최초 기동 시에는 CMake 메이크파일이 생성된 후 빌드가 진행되며, 두 번째부터는 `./build_all.sh`를 여러 번 반복 호출하더라도 업데이트된 소스파일만 빠르게 부분 컴파일(Incremental Compile)되는지 빌드 출력 속도를 확인합니다.
-### 2. 데몬 서버 구동 테스트
+
+### 2. 스마트 배포 스크립트를 통한 라즈베리파이 전송
+```bash
+./deploy.sh <pi_user> <ip_address>
+# 예시: ./deploy.sh ethan 172.20.26.241
+```
+- `deploy.sh` 실행 시 인자가 누락되거나 IP 형식이 올바르지 않으면 오류 메시지를 출력하고 종료합니다.
+- 정상 인자 전달 시 빌드 산출물(`bin/server`, `bin/libRemoteIO.so`)의 MD5 해시를 비교하여 변경 사항(업데이트)이 있는 파일만 선별해서 `scp`로 라즈베리파이로 전송하는지 검증합니다.
+- 변경된 파일이 없을 경우 `[알림] 변경된 파일이 없어 전송을 생략했습니다.` 문구가 출력되며 조기 종료되는지 교차 확인합니다.
+
+### 3. 데몬 서버 구동 테스트
 ```bash
 ./bin/server remoteIO_daemon
 ```
