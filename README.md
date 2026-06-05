@@ -1,7 +1,8 @@
 # TCP 원격 장치 제어 프로그램 (README)
+
 라즈베리파이 4 기반의 임베디드 장비 제어 서버와 우분투 리눅스 환경의 Dumb Terminal 클라이언트 간 TCP 소켓 통신을 지원하는 원격 하드웨어 제어 솔루션입니다.
+
 ## 1. 하드웨어 구성 및 핀 매핑
----
 원격 제어 서버가 탑재된 라즈베리파이 4 보드의 GPIO 매핑 설계는 다음과 같습니다.
 - **3색 LED 제어**
   - 빨간색 LED: GPIO 6 (Soft PWM 지원)
@@ -20,33 +21,33 @@
   - SCL: GPIO 3
   - *채널 명세:* Channel 0 (LDR 조도 센서), Channel 1 (NTC 서미스터 온도 센서), Channel 3 (가변저항 Potentiometer), Channel +64 (Analog OE - 보드 내장 D1 LED 출력)
 ## 2. 파일 및 디렉터리 구성
----
-- [CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/CMakeLists.txt): 프로젝트 전역 CMAKE 설정 파일
-- [all_build.sh](file:///home/ethan/workspace/veda/rpi-tcp-device-control/all_build.sh): 메이크파일 생성 및 증분 빌드를 관장하는 통합 쉘 스크립트
-- [deploy.sh](file:///home/ethan/workspace/veda/rpi-tcp-device-control/deploy.sh): 빌드 파일 변경 사항을 비교하여 라즈베리파이로 전송하는 스마트 배포 스크립트
-- [include/io_control.h](file:///home/ethan/workspace/veda/rpi-tcp-device-control/include/io_control.h): 입출력 장치 제어 및 상태 공유 구조체 헤더
-- [include/server_socket.h](file:///home/ethan/workspace/veda/rpi-tcp-device-control/include/server_socket.h): 소켓 통신 및 세션 관리 헤더
-- [lib/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/CMakeLists.txt): 원격 IO 라이브러리 빌드 설정
-- [lib/io_control.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/io_control.c): LED, 부저, 세그먼트 디바이스 비동기 스레드 구동 로직
-- [lib/server_socket.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/server_socket.c): epoll 멀티플렉싱 및 소켓 통신 상태 머신 핵심 로직
-- [lib/yl40.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/lib/yl40.c): PCF8591 I2C 장치 데이터 읽기/쓰기 및 조도 오토 루프 구동
-- [server/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/server/CMakeLists.txt): 서버 데몬 프로그램 빌드 설정
-- [server/main.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/server/main.c): 서버 데몬 기동 및 동적 공유 라이브러리(`libRemoteIO.so`)의 `dlopen` 진입점
-- [client/CMakeLists.txt](file:///home/ethan/workspace/veda/rpi-tcp-device-control/client/CMakeLists.txt): 클라이언트 프로그램 빌드 설정
-- [client/main.c](file:///home/ethan/workspace/veda/rpi-tcp-device-control/client/main.c): 시그널 마스킹 처리 및 표준 입출력 중계 클라이언트 (Dumb Terminal)
-- [docs/development_document.md](file:///home/ethan/workspace/veda/rpi-tcp-device-control/docs/development_document.md): 상세 개발 문서 (일정, 아키텍처 및 보완 조치)
+
+- [CMakeLists.txt](CMakeLists.txt): 프로젝트 전역 CMAKE 설정 파일
+- [all_build.sh](all_build.sh): 메이크파일 생성 및 증분 빌드를 관장하는 통합 쉘 스크립트
+- [deploy.sh](deploy.sh): 빌드 파일 변경 사항을 비교하여 라즈베리파이로 전송하는 스마트 배포 스크립트
+- [include/io_control.h](include/io_control.h): 입출력 장치 제어 및 상태 공유 구조체 헤더
+- [include/server_socket.h](include/server_socket.h): 소켓 통신 및 세션 관리 헤더
+- [lib/CMakeLists.txt](lib/CMakeLists.txt): 원격 IO 라이브러리 빌드 설정
+- [lib/io_control.c](lib/io_control.c): LED, 부저, 세그먼트 디바이스 비동기 스레드 구동 로직
+- [lib/server_socket.c](lib/server_socket.c): epoll 멀티플렉싱 및 소켓 통신 상태 머신 핵심 로직
+- [lib/yl40.c](lib/yl40.c): PCF8591 I2C 장치 데이터 읽기/쓰기 및 조도 오토 루프 구동
+- [server/CMakeLists.txt](server/CMakeLists.txt): 서버 데몬 프로그램 빌드 설정
+- [server/main.c](server/main.c): 서버 데몬 기동 및 동적 공유 라이브러리(`libRemoteIO.so`)의 `dlopen` 진입점
+- [client/CMakeLists.txt](client/CMakeLists.txt): 클라이언트 프로그램 빌드 설정
+- [client/main.c](client/main.c): 시그널 마스킹 처리 및 표준 입출력 중계 클라이언트 (Dumb Terminal)
+- [docs/development_document.md](docs/development_document.md): 상세 개발 문서 (일정, 아키텍처 및 보완 조치)
 ## 3. 빌드 방법
----
 ### 빌드 요구사항
 - CMake 3.10 이상
 - GCC 컴파일러
+- aarch64-linux-gnu-gcc 크로스컴파일러
 - wiringPi 라이브러리 (서버 실행 대상 라즈베리파이 시스템 내 필수 설치)
 
-### 호스트 PC 크로스 툴체인 설치 (라즈베리파이 타겟 크로스 컴파일용)
+<!-- ### 호스트 PC 크로스 툴체인 설치 (라즈베리파이 타겟 크로스 컴파일용)
 호스트 PC(Ubuntu x86_64 등)에서 라즈베리파이 4 타겟용 ARM64 바이너리를 생성하려면 다음 패키지를 먼저 설치해야 합니다.
 ```bash
 sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
-```
+``` -->
 
 ### 전체 빌드 및 증분 빌드 수행 (all_build.sh)
 전체 빌드 스크립트를 통해 클라이언트(x86_64)와 서버(ARM64 크로스 컴파일)를 순차적으로 빌드하여 `bin/` 폴더에 생성합니다.
@@ -87,7 +88,7 @@ sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 ./server_build.sh clean
 ```
 ## 4. 라즈베리파이 스마트 배포 (deploy.sh)
----
+
 호스트 PC에서 컴파일된 라즈베리파이 서버 바이너리(`bin/server`) 및 공유 라이브러리(`bin/libRemoteIO.so`)의 변경 여부(MD5 해시)를 확인하여, 업데이트된 파일만 전송합니다.
 ```bash
 # 변경된 빌드 산출물 전송 (사용자명과 IP 주소 입력)
@@ -101,7 +102,7 @@ sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 - 변경 내역이 없는 파일은 전송을 생략합니다.
 
 ## 5. 실행 방법
----
+
 ### 서버 데몬 기동 (라즈베리파이 측)
 서버 바이너리는 백그라운드 데몬으로 안전하게 분할되어 구동되며 시스템 로그(`syslog`)에 이벤트를 적재합니다.
 ```bash
